@@ -5,12 +5,14 @@ An ESP32-based garage parking sensor that uses visual LED feedback to help drive
 ## Features
 
 - **Symmetrical LED Display**: LEDs light up from both ends of the strip toward the center, providing clear visual feedback from either side of the vehicle
-- **Color-Coded Distance Feedback**:
-  - 🟢 **Green** (>200cm): Safe distance, keep moving forward
-  - ⚪ **White** (60-200cm): Moderate distance, slow down
-  - 🔴 **Red** (20-60cm): Getting close, proceed carefully
-  - 🔴 **All Red** (≤20cm): **STOP!** Perfect parking position reached
-- **Progressive Lighting**: More LEDs illuminate as the vehicle gets closer, providing intuitive distance awareness
+- **Automatic Color-Coded Distance Feedback**:
+  - 🟢 **Green** (Far 2/3 of range): Safe distance, keep moving forward
+  - 🟡 **Yellow** (Close 1/3 of range): Getting closer, proceed carefully
+  - 🔴 **All Red** (At stop distance): **STOP!** Perfect parking position reached
+- **Progressive Lighting**: Individual LEDs (not groups) turn off smoothly from outside-in as the vehicle approaches, providing intuitive distance awareness
+- **WiFi Configuration Portal**: Adjust stop and max distance without reprogramming - color zones automatically calculated
+- **Persistent Settings**: Configuration saved to EEPROM and retained after power cycle
+- **Smooth Measurements**: 5-sample moving average filter with real sensor priming eliminates jumpy readings
 - **Fast Compilation**: Uses lightweight Adafruit NeoPixel library for quick development cycles
 
 ## Hardware Requirements
@@ -18,7 +20,7 @@ An ESP32-based garage parking sensor that uses visual LED feedback to help drive
 - **ESP32 Development Board** (ESP32-WROOM-DA or compatible)
 - **HC-SR04 Ultrasonic Distance Sensor**
 - **WS2812B LED Strip** (60 LEDs, 5V)
-- **Power Supply**: 5V DC (adequate for LED strip - typically 3A recommended)
+- **Power Supply**: 5V DC, 2-3A recommended (brightness limited to 50/255 for USB power compatibility)
 - Jumper wires and mounting hardware
 
 ## Wiring
@@ -37,6 +39,9 @@ An ESP32-based garage parking sensor that uses visual LED feedback to help drive
 
 ### Dependencies
 - [Adafruit NeoPixel Library](https://github.com/adafruit/Adafruit_NeoPixel)
+- WiFi (built-in ESP32)
+- WebServer (built-in ESP32)
+- Preferences (built-in ESP32)
 
 ### Installation
 1. Install the Arduino IDE or use VS Code with the Arduino extension
@@ -47,32 +52,65 @@ An ESP32-based garage parking sensor that uses visual LED feedback to help drive
    ```
 4. Open `parking_sensor.ino` and upload to your ESP32
 
-### Configuration
+### WiFi Configuration
 
-You can adjust these parameters in the code to match your garage setup:
+The sensor creates its own WiFi access point for easy configuration:
+
+1. **Connect to WiFi**: 
+   - SSID: `ParkingSensor`
+   - Password: `configure123`
+
+2. **Open Web Interface**: 
+   - Navigate to `http://192.168.4.1` in your browser
+
+3. **Configure Settings**:
+   - **Stop Distance** (default 130cm): Perfect parking position - all LEDs turn solid red
+   - **Max Distance** (default 4000cm): Beyond this, LEDs turn off
+   - **Color Zones**: Automatically calculated - Green for far 2/3 of range, Yellow for close 1/3
+
+4. Settings are automatically saved to EEPROM and persist after reboot
+
+### Default Configuration
 
 ```cpp
-#define DANGER_DISTANCE_CM 20    // Distance for "STOP" (all red)
-#define MAX_DETECTION_CM 200     // Maximum detection range
-#define DISTANCE_PER_LEVEL 20    // Distance per LED level
-#define COLOR_CHANGE_LEVEL 3     // When color changes from red to white
+int stopDistance = 13;       // STOP position - all LEDs solid red (in cm)
+int maxDistance = 400;       // Maximum detection range (in cm)
+// Yellow threshold auto-calculated: stopDistance + (range × 2/3)
+#define BRIGHTNESS 50         // LED brightness (0-255)
+#define FILTER_SAMPLES 5      // Moving average filter samples
 ```
 
 ## How It Works
 
-1. The HC-SR04 sensor continuously measures the distance to the approaching vehicle
-2. Based on the measured distance, the system calculates how many LED "triplets" (groups of 3 LEDs) to illuminate
-3. LEDs light up symmetrically from both ends of the strip, converging toward the center
-4. Color changes automatically based on proximity thresholds
-5. When the vehicle reaches the target distance (20cm), all LEDs turn red to signal "STOP"
+1. **Distance Measurement**: The HC-SR04 sensor continuously measures distance in centimeters, with readings smoothed by a 5-sample moving average filter initialized with real sensor readings at startup
+2. **LED Calculation**: Based on distance, the system calculates how many individual LEDs should be illuminated (not triplets)
+3. **Symmetrical Display**: Individual LEDs light up from both ends of the strip, turning off progressively from outside-in as the vehicle approaches
+4. **Automatic Color Zones**:
+   - Green zone: Far 2/3 of the distance range (calculated as: stopDistance + range × 2/3 to maxDistance)
+   - Yellow zone: Close 1/3 of the distance range (stopDistance to yellow threshold)
+   - Red: All LEDs solid red when at or below stopDistance
+5. **Web Configuration**: Real-time distance display and simple threshold adjustment via WiFi portal - only configure stop and max distance, color zones calculate automatically
 
 ## Installation in Garage
 
 1. Mount the LED strip horizontally at driver's eye level (typically wall-mounted)
 2. Mount the ultrasonic sensor at the parking target position, pointing toward the approaching vehicle
 3. Position the sensor at bumper height for accurate distance measurement
-4. Connect power supply and ESP32
-5. Adjust `DANGER_DISTANCE_CM` to match your ideal parking position
+4. Connect to 5V power supply (2-3A recommended for higher brightness; current brightness setting works with USB power)
+5. Connect to `ParkingSensor` WiFi and adjust stop/max distances at `http://192.168.4.1` - color zones automatically adjust based on your settings
+
+## Power Considerations
+
+- LED brightness is set to 50/255 to work within USB power constraints
+- For full brightness operation, use a dedicated 5V 3A power supply
+- Current draw: approximately 60mA per LED at full brightness (60 LEDs × 60mA = 3.6A max)
+
+## Troubleshooting
+
+- **Jumpy measurements**: Increase `FILTER_SAMPLES` for more smoothing (trades responsiveness for stability)
+- **LEDs don't light up**: Check power supply capacity and wiring connections
+- **Can't connect to WiFi**: Ensure you're connecting to `ParkingSensor` network, not your home WiFi
+- **Web interface not loading**: Try `http://192.168.4.1` - IP address is always the same
 
 ## Inspired By
 

@@ -20,9 +20,9 @@ const char *AP_PASSWORD = "configure123";
 #define SOUND_SPEED_CM_US 0.0343 // Speed of sound in cm/microsecond
 
 // ——— PROXIMITY THRESHOLDS (defaults - can be changed via web interface) ———
-int stopDistance = 20;     // STOP position - all LEDs solid red
-int maxDistance = 200;     // Maximum detection range - beyond this LEDs are off
-int yellowThreshold = 100; // Distance where LEDs switch from green to yellow
+int stopDistance = 20; // STOP position (cm) - all LEDs solid red
+int maxDistance = 400; // Maximum detection range (cm) - beyond this LEDs are off
+// yellowThreshold is calculated as stopDistance + (range * 1/3) - green for first 2/3, yellow for last 1/3
 
 // ——— FILTERING ———
 #define FILTER_SAMPLES 5 // Number of readings to average
@@ -89,6 +89,9 @@ void displayDistanceGradient(float distance)
       ledsToLight = LEDS_PER_SIDE;
     if (ledsToLight < 1)
       ledsToLight = 1;
+
+    // Calculate yellow threshold: green for first 2/3 of range, yellow for last 1/3
+    float yellowThreshold = stopDistance + (rangeSize * 2.0 / 3.0);
 
     // Determine color based on zone
     uint32_t color;
@@ -177,9 +180,8 @@ void startupBlink()
 void loadSettings()
 {
   preferences.begin("parking", false);
-  stopDistance = preferences.getInt("stopDist", 20);
-  maxDistance = preferences.getInt("maxDist", 200);
-  yellowThreshold = preferences.getInt("yellowThresh", 100);
+  stopDistance = preferences.getInt("stopDist", stopDistance);
+  maxDistance = preferences.getInt("maxDist", maxDistance);
   preferences.end();
 
   Serial.println("Settings loaded:");
@@ -187,7 +189,8 @@ void loadSettings()
   Serial.println(stopDistance);
   Serial.print("  Max distance: ");
   Serial.println(maxDistance);
-  Serial.print("  Yellow threshold: ");
+  float yellowThreshold = stopDistance + ((maxDistance - stopDistance) * 2.0 / 3.0);
+  Serial.print("  Yellow threshold (calculated): ");
   Serial.println(yellowThreshold);
 }
 
@@ -196,7 +199,6 @@ void saveSettings()
   preferences.begin("parking", false);
   preferences.putInt("stopDist", stopDistance);
   preferences.putInt("maxDist", maxDistance);
-  preferences.putInt("yellowThresh", yellowThreshold);
   preferences.end();
   Serial.println("Settings saved!");
 }
@@ -206,6 +208,7 @@ void handleRoot()
   float currentDistance = measureDistanceCM();
 
   String html = "<!DOCTYPE html><html><head>";
+  html += "<meta charset='UTF-8'>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += "<style>";
   html += "body{font-family:Arial;max-width:500px;margin:20px auto;padding:20px;background:#f0f0f0}";
@@ -231,11 +234,17 @@ void handleRoot()
   html += "<label>⚪ Maximum Detection (cm)</label>";
   html += "<input type='number' name='max' value='" + String(maxDistance) + "' min='50' max='500'>";
   html += "<div class='info'>Beyond this distance, LEDs turn off</div>";
-
-  html += "<label>🟡 Yellow Threshold (cm)</label>";
-  html += "<input type='number' name='yellow' value='" + String(yellowThreshold) + "' min='30' max='300'>";
-  html += "<div class='info'>Below this: YELLOW, Above this: GREEN</div>";
   html += "</div>";
+
+  html += "<div class='box' style='background:#f8f9fa;border:2px dashed #ccc'>";
+  html += "<div style='color:#666;font-size:14px'>";
+  html += "<strong>Color Zones (Auto-calculated):</strong><br>";
+  float range = maxDistance - stopDistance;
+  float yellowCalc = stopDistance + (range * 2.0 / 3.0);
+  html += "🟢 Green: " + String((int)yellowCalc) + "-" + String(maxDistance) + " cm (far 2/3)<br>";
+  html += "🟡 Yellow: " + String(stopDistance) + "-" + String((int)yellowCalc) + " cm (close 1/3)<br>";
+  html += "🔴 Red: ≤" + String(stopDistance) + " cm (STOP)";
+  html += "</div></div>";
 
   html += "<button type='submit'>💾 Save Settings</button>";
   html += "</form>";
@@ -255,14 +264,11 @@ void handleSave()
   {
     maxDistance = server.arg("max").toInt();
   }
-  if (server.hasArg("yellow"))
-  {
-    yellowThreshold = server.arg("yellow").toInt();
-  }
 
   saveSettings();
 
   String html = "<!DOCTYPE html><html><head>";
+  html += "<meta charset='UTF-8'>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += "<meta http-equiv='refresh' content='2;url=/'>";
   html += "<style>body{font-family:Arial;text-align:center;padding:50px;background:#f0f0f0}";
