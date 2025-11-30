@@ -9,11 +9,10 @@ const char *AP_PASSWORD = "configure123";
 
 // ——— LED CONFIGURATION ———
 // This is tuned for 60 leds
-#define LED_PIN 17         // GPIO pin for LED strip data line
-#define NUM_LEDS 60        // Total number of LEDs on the strip
-#define BRIGHTNESS 50      // LED brightness (0-255) - REDUCED for USB power
-#define LEDS_PER_TRIPLET 3 // Number of LEDs grouped together
-#define MAX_TRIPLETS 10    // Maximum number of triplets (30 LEDs per side)
+#define LED_PIN 17                   // GPIO pin for LED strip data line
+#define NUM_LEDS 60                  // Total number of LEDs on the strip
+#define BRIGHTNESS 50                // LED brightness (0-255) - REDUCED for USB power
+#define LEDS_PER_SIDE (NUM_LEDS / 2) // Number of LEDs per side (strip lit symmetrically from both ends)
 
 // ——— DISTANCE SENSOR CONFIGURATION ———
 #define ULTRASONIC_TRIG_PIN 5
@@ -25,6 +24,12 @@ int stopDistance = 20;     // STOP position - all LEDs solid red
 int maxDistance = 200;     // Maximum detection range - beyond this LEDs are off
 int yellowThreshold = 100; // Distance where LEDs switch from green to yellow
 
+// ——— FILTERING ———
+#define FILTER_SAMPLES 5 // Number of readings to average
+float distanceReadings[FILTER_SAMPLES];
+int readingIndex = 0;
+float filteredDistance = 0;
+
 // ——— TIMING ———
 #define LOOP_DELAY_MS 100
 #define STARTUP_BLINK_MS 500
@@ -34,23 +39,17 @@ WebServer server(80);
 Preferences preferences;
 
 /**
- * Lights up a triplet of LEDs symmetrically from both ends of the strip
- * @param tripletIndex: Which triplet to control (0-9)
+ * Lights up a single LED symmetrically from both ends of the strip
+ * @param ledIndex: Which LED position to control (0-29, from outside-in)
  * @param color: RGB color as uint32_t
  */
-void setSymmetricalTriplet(int tripletIndex, uint32_t color)
+void setSymmetricalLED(int ledIndex, uint32_t color)
 {
-  int startIndex = tripletIndex * LEDS_PER_TRIPLET;
+  // Light up LED from the beginning of strip
+  ledStrip.setPixelColor(ledIndex, color);
 
-  // Light up triplet from the beginning of strip
-  ledStrip.setPixelColor(startIndex, color);
-  ledStrip.setPixelColor(startIndex + 1, color);
-  ledStrip.setPixelColor(startIndex + 2, color);
-
-  // Light up corresponding triplet from the end of strip (mirrored)
-  ledStrip.setPixelColor(NUM_LEDS - (startIndex + 1), color);
-  ledStrip.setPixelColor(NUM_LEDS - (startIndex + 2), color);
-  ledStrip.setPixelColor(NUM_LEDS - (startIndex + 3), color);
+  // Light up corresponding LED from the end of strip (mirrored)
+  ledStrip.setPixelColor(NUM_LEDS - 1 - ledIndex, color);
 }
 
 /**
@@ -61,17 +60,17 @@ void displayDistanceGradient(float distance)
   if (distance > maxDistance)
   {
     // Beyond max distance: all LEDs off
-    for (int triplet = 0; triplet < MAX_TRIPLETS; triplet++)
+    for (int i = 0; i < LEDS_PER_SIDE; i++)
     {
-      setSymmetricalTriplet(triplet, ledStrip.Color(0, 0, 0));
+      setSymmetricalLED(i, ledStrip.Color(0, 0, 0));
     }
   }
   else if (distance <= stopDistance)
   {
     // At or below stop: all LEDs solid red
-    for (int triplet = 0; triplet < MAX_TRIPLETS; triplet++)
+    for (int i = 0; i < LEDS_PER_SIDE; i++)
     {
-      setSymmetricalTriplet(triplet, ledStrip.Color(255, 0, 0));
+      setSymmetricalLED(i, ledStrip.Color(255, 0, 0));
     }
   }
   else
@@ -79,12 +78,17 @@ void displayDistanceGradient(float distance)
     // Calculate how many LEDs should be ON (turning off from outside-in as car approaches)
     float rangeSize = maxDistance - stopDistance;
     float progress = (distance - stopDistance) / rangeSize; // 1.0 at max, 0.0 at stop
-    int tripletsToLight = (int)(progress * MAX_TRIPLETS);
 
-    if (tripletsToLight > MAX_TRIPLETS)
-      tripletsToLight = MAX_TRIPLETS;
-    if (tripletsToLight < 1)
-      tripletsToLight = 1;
+    // Apply square root to make LED changes more consistent across the distance range
+    // This makes LEDs turn off more evenly as you approach (rather than faster at far distances)
+    progress = sqrt(progress);
+
+    int ledsToLight = (int)(progress * LEDS_PER_SIDE);
+
+    if (ledsToLight > LEDS_PER_SIDE)
+      ledsToLight = LEDS_PER_SIDE;
+    if (ledsToLight < 1)
+      ledsToLight = 1;
 
     // Determine color based on zone
     uint32_t color;
@@ -99,26 +103,26 @@ void displayDistanceGradient(float distance)
       color = ledStrip.Color(255, 255, 0);
     }
 
-    // Light up triplets from OUTSIDE IN (higher indices stay on longer)
-    for (int triplet = 0; triplet < MAX_TRIPLETS; triplet++)
+    // Light up LEDs from OUTSIDE IN (higher indices stay on longer)
+    for (int i = 0; i < LEDS_PER_SIDE; i++)
     {
-      // Invert: outer triplets (higher index) stay on longer
-      if (triplet >= (MAX_TRIPLETS - tripletsToLight))
+      // Invert: outer LEDs (higher index) stay on longer
+      if (i >= (LEDS_PER_SIDE - ledsToLight))
       {
-        setSymmetricalTriplet(triplet, color);
+        setSymmetricalLED(i, color);
       }
       else
       {
-        // Turn off inner triplets first as car approaches
-        setSymmetricalTriplet(triplet, ledStrip.Color(0, 0, 0));
+        // Turn off inner LEDs first as car approaches
+        setSymmetricalLED(i, ledStrip.Color(0, 0, 0));
       }
     }
   }
 }
 
 /**
- * Measures distance using HC-SR04 ultrasonic sensor
- * @return: Distance in centimeters
+ * Measures distance using HC-SR04 ultrasonic sensor with moving average filter
+ * @return: Distance in centimeters (filtered)
  */
 float measureDistanceCM()
 {
@@ -133,7 +137,21 @@ float measureDistanceCM()
   float pulseDuration = pulseIn(ULTRASONIC_ECHO_PIN, HIGH);
 
   // Convert duration to distance: (time * speed_of_sound) / 2
-  return (pulseDuration * SOUND_SPEED_CM_US) / 2;
+  float rawDistance = (pulseDuration * SOUND_SPEED_CM_US) / 2;
+
+  // Apply moving average filter
+  distanceReadings[readingIndex] = rawDistance;
+  readingIndex = (readingIndex + 1) % FILTER_SAMPLES;
+
+  // Calculate average
+  float sum = 0;
+  for (int i = 0; i < FILTER_SAMPLES; i++)
+  {
+    sum += distanceReadings[i];
+  }
+  filteredDistance = sum / FILTER_SAMPLES;
+
+  return filteredDistance;
 }
 
 /**
@@ -141,15 +159,15 @@ float measureDistanceCM()
  */
 void startupBlink()
 {
-  for (int triplet = 0; triplet < MAX_TRIPLETS; triplet++)
+  for (int i = 0; i < LEDS_PER_SIDE; i++)
   {
-    setSymmetricalTriplet(triplet, ledStrip.Color(255, 0, 0));
+    setSymmetricalLED(i, ledStrip.Color(255, 0, 0));
   }
   ledStrip.show();
   delay(STARTUP_BLINK_MS);
-  for (int triplet = 0; triplet < MAX_TRIPLETS; triplet++)
+  for (int i = 0; i < LEDS_PER_SIDE; i++)
   {
-    setSymmetricalTriplet(triplet, ledStrip.Color(0, 0, 0));
+    setSymmetricalLED(i, ledStrip.Color(0, 0, 0));
   }
   ledStrip.show();
 }
@@ -272,6 +290,19 @@ void setup()
   // Initialize ultrasonic sensor pins
   pinMode(ULTRASONIC_TRIG_PIN, OUTPUT);
   pinMode(ULTRASONIC_ECHO_PIN, INPUT);
+
+  // Prime the distance filter with real readings
+  for (int i = 0; i < FILTER_SAMPLES; i++)
+  {
+    digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
+    delayMicroseconds(2);
+    digitalWrite(ULTRASONIC_TRIG_PIN, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
+    float pulseDuration = pulseIn(ULTRASONIC_ECHO_PIN, HIGH);
+    distanceReadings[i] = (pulseDuration * SOUND_SPEED_CM_US) / 2;
+    delay(50);
+  }
 
   // Signal successful startup
   startupBlink();
