@@ -9,6 +9,7 @@ An ESP32-based garage parking sensor that uses visual LED feedback to help drive
   - 🟢 **Green** (Far 2/3 of range): Safe distance, keep moving forward
   - 🟡 **Yellow** (Close 1/3 of range): Getting closer, proceed carefully
   - 🔴 **All Red** (At stop distance): **STOP!** Perfect parking position reached
+- **Auto-Shutoff**: LEDs automatically turn off 2.5 minutes after parking to save power
 - **Progressive Lighting**: Individual LEDs (not groups) turn off smoothly from outside-in as the vehicle approaches, providing intuitive distance awareness
 - **WiFi Configuration Portal**: Adjust stop and max distance without reprogramming - color zones automatically calculated
 - **Persistent Settings**: Configuration saved to EEPROM and retained after power cycle
@@ -73,11 +74,12 @@ The sensor creates its own WiFi access point for easy configuration:
 ### Default Configuration
 
 ```cpp
-int stopDistance = 13;       // STOP position - all LEDs solid red (in cm)
-int maxDistance = 400;       // Maximum detection range (in cm)
+int stopDistance = 13;         // STOP position - all LEDs solid red (in cm)
+int maxDistance = 400;         // Maximum detection range (in cm)
 // Yellow threshold auto-calculated: stopDistance + (range × 2/3)
-#define BRIGHTNESS 50         // LED brightness (0-255)
-#define FILTER_SAMPLES 5      // Moving average filter samples
+#define BRIGHTNESS 50          // LED brightness (0-255)
+#define FILTER_SAMPLES 5       // Moving average filter samples
+#define AUTO_SHUTOFF_MS 150000 // Auto-shutoff timer: 2.5 minutes (150 seconds)
 ```
 
 ## How It Works
@@ -89,7 +91,8 @@ int maxDistance = 400;       // Maximum detection range (in cm)
    - Green zone: Far 2/3 of the distance range (calculated as: stopDistance + range × 2/3 to maxDistance)
    - Yellow zone: Close 1/3 of the distance range (stopDistance to yellow threshold)
    - Red: All LEDs solid red when at or below stopDistance
-5. **Web Configuration**: Real-time distance display and simple threshold adjustment via WiFi portal - only configure stop and max distance, color zones calculate automatically
+5. **Auto-Shutoff**: When vehicle parks at stop distance, LEDs remain red for 2.5 minutes then automatically turn off to save power. Timer resets if vehicle moves away
+6. **Web Configuration**: Real-time distance display and simple threshold adjustment via WiFi portal - only configure stop and max distance, color zones calculate automatically
 
 ## Installation in Garage
 

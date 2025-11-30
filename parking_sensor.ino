@@ -33,6 +33,11 @@ float filteredDistance = 0;
 // ——— TIMING ———
 #define LOOP_DELAY_MS 100
 #define STARTUP_BLINK_MS 500
+#define AUTO_SHUTOFF_MS 150000 // 2.5 minutes (150 seconds)
+
+// ——— STATE TRACKING ———
+unsigned long parkedAtStopTime = 0; // When car reached stop distance
+bool ledsAutoOff = false;           // Track if LEDs are auto-shutoff
 
 Adafruit_NeoPixel ledStrip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 WebServer server(80);
@@ -55,11 +60,11 @@ void setSymmetricalLED(int ledIndex, uint32_t color)
 /**
  * Display LEDs based on distance with zone-based behavior
  */
-void displayDistanceGradient(float distance)
+void displayDistanceGradient(float distance, bool forceOff)
 {
-  if (distance > maxDistance)
+  if (forceOff || distance > maxDistance)
   {
-    // Beyond max distance: all LEDs off
+    // LEDs off (either forced off or beyond max distance)
     for (int i = 0; i < LEDS_PER_SIDE; i++)
     {
       setSymmetricalLED(i, ledStrip.Color(0, 0, 0));
@@ -342,8 +347,36 @@ void loop()
   Serial.print(currentDistance);
   Serial.println(" cm");
 
+  // Track when car parks at stop distance
+  if (currentDistance <= stopDistance)
+  {
+    if (parkedAtStopTime == 0)
+    {
+      // Just arrived at stop position
+      parkedAtStopTime = millis();
+      ledsAutoOff = false;
+      Serial.println("Car parked - starting auto-shutoff timer");
+    }
+    else if (!ledsAutoOff && (millis() - parkedAtStopTime >= AUTO_SHUTOFF_MS))
+    {
+      // Timer expired - turn off LEDs
+      ledsAutoOff = true;
+      Serial.println("Auto-shutoff: LEDs turning off");
+    }
+  }
+  else
+  {
+    // Car moved away from stop position - reset timer
+    if (parkedAtStopTime != 0)
+    {
+      Serial.println("Car moved - resetting auto-shutoff timer");
+    }
+    parkedAtStopTime = 0;
+    ledsAutoOff = false;
+  }
+
   // Display gradient based on current distance
-  displayDistanceGradient(currentDistance);
+  displayDistanceGradient(currentDistance, ledsAutoOff);
 
   // Update the LED display
   ledStrip.show();
