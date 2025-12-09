@@ -11,7 +11,7 @@ const char *AP_PASSWORD = "configure123";
 // This is tuned for 60 leds
 #define LED_PIN 17                   // GPIO pin for LED strip data line
 #define NUM_LEDS 60                  // Total number of LEDs on the strip
-#define BRIGHTNESS 50                // LED brightness (0-255) - REDUCED for USB power
+#define BRIGHTNESS 100               // LED brightness (0-255) - REDUCED for USB power
 #define LEDS_PER_SIDE (NUM_LEDS / 2) // Number of LEDs per side (strip lit symmetrically from both ends)
 
 // ——— DISTANCE SENSOR CONFIGURATION ———
@@ -22,13 +22,14 @@ const char *AP_PASSWORD = "configure123";
 // ——— PROXIMITY THRESHOLDS (defaults - can be changed via web interface) ———
 int stopDistance = 20; // STOP position (cm) - all LEDs solid red
 int maxDistance = 400; // Maximum detection range (cm) - beyond this LEDs are off
-// yellowThreshold is calculated as stopDistance + (range * 1/3) - green for first 2/3, yellow for last 1/3
+// yellowThreshold: yellow is last 15% before stop, green is remaining 85% of range
 
 // ——— FILTERING ———
-#define FILTER_SAMPLES 5 // Number of readings to average
+#define FILTER_SAMPLES 5        // Number of readings to average (simple moving average)
+#define SENSOR_TIMEOUT_US 50000 // Ultrasonic sensor timeout in microseconds (50ms = ~8.5m max range)
 float distanceReadings[FILTER_SAMPLES];
 int readingIndex = 0;
-float filteredDistance = 0;
+float averageDistance = 0;
 
 // ——— TIMING ———
 #define LOOP_DELAY_MS 100
@@ -95,8 +96,8 @@ void displayDistanceGradient(float distance, bool forceOff)
     if (ledsToLight < 1)
       ledsToLight = 1;
 
-    // Calculate yellow threshold: green for first 2/3 of range, yellow for last 1/3
-    float yellowThreshold = stopDistance + (rangeSize * 2.0 / 3.0);
+    // Calculate yellow threshold: yellow is last 15% of range before stop
+    float yellowThreshold = stopDistance + (rangeSize * 0.15);
 
     // Determine color based on zone
     uint32_t color;
@@ -141,25 +142,31 @@ float measureDistanceCM()
   delayMicroseconds(10);
   digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
 
-  // Measure echo duration
-  float pulseDuration = pulseIn(ULTRASONIC_ECHO_PIN, HIGH);
+  // Measure echo duration with timeout
+  float pulseDuration = pulseIn(ULTRASONIC_ECHO_PIN, HIGH, SENSOR_TIMEOUT_US);
 
   // Convert duration to distance: (time * speed_of_sound) / 2
   float rawDistance = (pulseDuration * SOUND_SPEED_CM_US) / 2;
 
-  // Apply moving average filter
+  // If sensor times out, use previous average
+  if (rawDistance == 0 && averageDistance > 0)
+  {
+    rawDistance = averageDistance;
+  }
+
+  // Add to circular buffer
   distanceReadings[readingIndex] = rawDistance;
   readingIndex = (readingIndex + 1) % FILTER_SAMPLES;
 
-  // Calculate average
+  // Calculate simple moving average
   float sum = 0;
   for (int i = 0; i < FILTER_SAMPLES; i++)
   {
     sum += distanceReadings[i];
   }
-  filteredDistance = sum / FILTER_SAMPLES;
+  averageDistance = sum / FILTER_SAMPLES;
 
-  return filteredDistance;
+  return averageDistance;
 }
 
 /**
@@ -194,7 +201,7 @@ void loadSettings()
   Serial.println(stopDistance);
   Serial.print("  Max distance: ");
   Serial.println(maxDistance);
-  float yellowThreshold = stopDistance + ((maxDistance - stopDistance) * 2.0 / 3.0);
+  float yellowThreshold = stopDistance + ((maxDistance - stopDistance) * 0.15);
   Serial.print("  Yellow threshold (calculated): ");
   Serial.println(yellowThreshold);
 }
@@ -245,9 +252,9 @@ void handleRoot()
   html += "<div style='color:#666;font-size:14px'>";
   html += "<strong>Color Zones (Auto-calculated):</strong><br>";
   float range = maxDistance - stopDistance;
-  float yellowCalc = stopDistance + (range * 2.0 / 3.0);
-  html += "🟢 Green: " + String((int)yellowCalc) + "-" + String(maxDistance) + " cm (far 2/3)<br>";
-  html += "🟡 Yellow: " + String(stopDistance) + "-" + String((int)yellowCalc) + " cm (close 1/3)<br>";
+  float yellowCalc = stopDistance + (range * 0.15);
+  html += "🟢 Green: " + String((int)yellowCalc) + "-" + String(maxDistance) + " cm (85%)<br>";
+  html += "🟡 Yellow: " + String(stopDistance) + "-" + String((int)yellowCalc) + " cm (15%)<br>";
   html += "🔴 Red: ≤" + String(stopDistance) + " cm (STOP)";
   html += "</div></div>";
 
@@ -302,17 +309,17 @@ void setup()
   pinMode(ULTRASONIC_TRIG_PIN, OUTPUT);
   pinMode(ULTRASONIC_ECHO_PIN, INPUT);
 
-  // Prime the distance filter with real readings
+  // Initialize distance readings array with first reading
+  digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(ULTRASONIC_TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
+  float pulseDuration = pulseIn(ULTRASONIC_ECHO_PIN, HIGH, SENSOR_TIMEOUT_US);
+  float initialDistance = (pulseDuration * SOUND_SPEED_CM_US) / 2;
   for (int i = 0; i < FILTER_SAMPLES; i++)
   {
-    digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
-    delayMicroseconds(2);
-    digitalWrite(ULTRASONIC_TRIG_PIN, HIGH);
-    delayMicroseconds(10);
-    digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
-    float pulseDuration = pulseIn(ULTRASONIC_ECHO_PIN, HIGH);
-    distanceReadings[i] = (pulseDuration * SOUND_SPEED_CM_US) / 2;
-    delay(50);
+    distanceReadings[i] = initialDistance;
   }
 
   // Signal successful startup
